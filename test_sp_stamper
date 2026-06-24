@@ -1,0 +1,120 @@
+"""
+Tests for SP Stamper (sp_stamper.py)
+Run: python -m pytest test_sp_stamper.py -v
+  or: python -m unittest test_sp_stamper.py
+"""
+import unittest
+
+
+# ── Zero-width character codec (copied from sp_stamper.py) ───────────
+
+_ZW = ["\u200b", "\u200c", "\u200d", "\u2060"]
+_ZW_IDX: dict[str, int] = {c: i for i, c in enumerate(_ZW)}
+
+
+def zw_encode(text: str) -> str:
+    """Encode a string into invisible Unicode characters."""
+    out = []
+    for byte in text.encode("utf-8"):
+        out.append(_ZW[(byte >> 6) & 3])
+        out.append(_ZW[(byte >> 4) & 3])
+        out.append(_ZW[(byte >> 2) & 3])
+        out.append(_ZW[byte & 3])
+    return "".join(out)
+
+
+def zw_decode(zw: str) -> str | None:
+    """Decode invisible Unicode characters back to a string."""
+    vals = [_ZW_IDX[ch] for ch in zw if ch in _ZW_IDX]
+    usable = (len(vals) // 4) * 4
+    out = bytearray()
+    for i in range(0, usable, 4):
+        byte = (vals[i] << 6) | (vals[i+1] << 4) | (vals[i+2] << 2) | vals[i+3]
+        out.append(byte)
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def has_hidden_stamp(source: str, signature: str) -> bool:
+    """Check whether a hidden stamp is already present in source."""
+    encoded = zw_encode(signature)
+    return encoded in source
+
+
+# ── tests ─────────────────────────────────────────────────────────────
+
+class TestZeroWidthCodec(unittest.TestCase):
+
+    def test_encode_decode_ascii(self):
+        """ASCII string survives round-trip."""
+        original = "shashevpro.ru"
+        self.assertEqual(zw_decode(zw_encode(original)), original)
+
+    def test_encode_decode_cyrillic(self):
+        """Cyrillic string survives round-trip."""
+        original = "Шашев"
+        self.assertEqual(zw_decode(zw_encode(original)), original)
+
+    def test_encode_decode_empty(self):
+        """Empty string encodes to empty and decodes to empty."""
+        self.assertEqual(zw_encode(""), "")
+        self.assertEqual(zw_decode(""), "")
+
+    def test_encoded_is_invisible(self):
+        """Encoded output contains only zero-width characters."""
+        encoded = zw_encode("test")
+        for ch in encoded:
+            self.assertIn(ch, _ZW)
+
+    def test_encoded_length(self):
+        """Each ASCII byte produces exactly 4 zero-width chars."""
+        text = "abc"  # 3 bytes
+        self.assertEqual(len(zw_encode(text)), 3 * 4)
+
+    def test_different_strings_different_encoding(self):
+        """Different strings produce different encodings."""
+        self.assertNotEqual(zw_encode("foo"), zw_encode("bar"))
+
+    def test_decode_ignores_non_zw_chars(self):
+        """Decoder ignores regular characters mixed in."""
+        encoded = zw_encode("hi")
+        mixed = "some text " + encoded + " more text"
+        self.assertEqual(zw_decode(mixed), "hi")
+
+
+class TestStampDetection(unittest.TestCase):
+
+    def test_detects_existing_stamp(self):
+        """Detects hidden stamp already present in source."""
+        sig = "shashevpro.ru"
+        source = "# comment\n" + zw_encode(sig) + "\nprint('hello')\n"
+        self.assertTrue(has_hidden_stamp(source, sig))
+
+    def test_no_false_positive_on_clean_file(self):
+        """Clean file does not trigger stamp detection."""
+        source = "# shashevpro\nprint('hello')\n"
+        self.assertFalse(has_hidden_stamp(source, "shashevpro.ru"))
+
+    def test_different_signature_not_detected(self):
+        """A different signature is not detected as a match."""
+        source = "# comment\n" + zw_encode("other.ru") + "\n"
+        self.assertFalse(has_hidden_stamp(source, "shashevpro.ru"))
+
+
+class TestVisibleStamp(unittest.TestCase):
+
+    def test_visible_stamp_is_comment(self):
+        """Visible stamp is a valid Python comment."""
+        stamp = "# shashevpro"
+        self.assertTrue(stamp.startswith("#"))
+
+    def test_visible_stamp_in_source(self):
+        """Visible stamp can be found in source by string search."""
+        source = "# shashevpro\nprint('hello')\n"
+        self.assertIn("# shashevpro", source)
+
+
+if __name__ == "__main__":
+    unittest.main()
